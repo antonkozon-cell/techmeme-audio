@@ -19,8 +19,8 @@ jobs:
           python-version: '3.11'
 
 
-   - name: Instalacia kniznic
-     run: pip install --upgrade google-genai beautifulsoup4
+       - name: Instalacia kniznic
+         run: pip install --upgrade google-genai beautifulsoup4
 
       - name: Spustenie generatora a odoslanie MP3
         env:
