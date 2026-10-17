@@ -18,8 +18,9 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalacia kniznic
-        run: pip install google-genai edge-tts beautifulsoup4 gTTs
+
+   - name: Instalacia kniznic
+     run: pip install --upgrade google-genai beautifulsoup4
 
       - name: Spustenie generatora a odoslanie MP3
         env:
