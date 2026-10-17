@@ -1,0 +1,29 @@
+name: Techmeme Daily Slovak Audio
+
+on:
+  schedule:
+    # Spusta sa kazdy den o 05:20 UTC (co je 07:20 v lete a 06:20 v zime v Bratislave)
+    - cron: '20 5 * * *'
+  workflow_dispatch: # Umozni okamzite manualne spustenie tlacitkom
+
+jobs:
+  build_and_send_audio:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stiahnutie repozitara
+        uses: actions/checkout@v4
+
+      - name: Nastavenie Pythonu
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalacia kniznic
+        run: pip install google-genai edge-tts beautifulsoup4
+
+      - name: Spustenie generatora a odoslanie MP3
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+        run: python main.py
