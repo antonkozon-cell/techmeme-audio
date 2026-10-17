@@ -4,7 +4,7 @@ on:
   schedule:
     # Spusta sa kazdy den o 05:20 UTC (co je 07:20 v lete a 06:20 v zime v Bratislave)
     - cron: '20 5 * * *'
-  workflow_dispatch: # Umozni okamzite manualne spustenie tlacitkom
+  workflow_dispatch:  # Umozni okamzite manualne spustenie tlacitkom
 
 jobs:
   build_and_send_audio:
@@ -18,9 +18,8 @@ jobs:
         with:
           python-version: '3.11'
 
-
-       - name: Instalacia kniznic
-         run: pip install --upgrade google-genai beautifulsoup4
+      - name: Instalacia kniznic
+        run: pip install --upgrade google-genai beautifulsoup4
 
       - name: Spustenie generatora a odoslanie MP3
         env:
