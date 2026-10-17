@@ -47,7 +47,7 @@ def generate_gemini_audio(raw_news, output_file="techmeme_brifing.mp3"):
     
     print("Generujem natívne audio priamo cez Gemini...")
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-3.8-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
             response_modalities=["AUDIO"],
