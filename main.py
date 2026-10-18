@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
 import edge_tts
+from gtts import gTTS
 
 def get_prefs():
     repo = os.environ.get("REPO", "antonkozon-cell/techmeme-audio")
@@ -22,7 +23,7 @@ def get_prefs():
             elif t.startswith("DISLIKE:"):
                 dislikes.append(t.replace("DISLIKE:", "").strip())
     except Exception as e:
-        print("Citanle preferencii preskocene:", e)
+        print("Citanie preferencii preskocene:", e)
     return likes, dislikes
 
 def fetch_all_news():
@@ -48,7 +49,7 @@ def generate_script_and_topics(news, likes, dislikes):
         "Si slovensky technologicky moderator. Sprav dlhy, podrobny a putavy rozhlasovy prehlad v slovencine (aspon 1200 slov) zo vsetkych zaujimavych sprav nizsie. "
         "Striktne vynechaj mergers, akvizicie, kryptomeny, datove centra a funding deals. "
         + pref_text +
-        "Rozdel prehlad na logicke celky, vysvetli kontext a rozober spravy do hlbky. Pis cisty suvisly text vhodny na priame citanie nahlas, bez odrazok a bez hviezdiciek.\n"
+        "Rozdel prehlad na logicke odseky, vysvetli kontext a rozober spravy do hlbky. Pis cisty suvisly text vhodny na priame citanie nahlas, bez odrazok a bez hviezdiciek.\n"
         "Na uplny koniec tvojej odpovede pridaj presny oddelovac ===TEMY=== a za nim vypis 8 az 12 hlavnych tem z dnesneho prehladu, kazdu na novy riadok ako kratky nazov (max 6 slov, bez cislovania a odrazok).\n\n"
         "SPRAVY:\n" + news
     )
@@ -58,30 +59,50 @@ def generate_script_and_topics(news, likes, dislikes):
     topics = [line.strip("- *1234567890.") for line in parts[1].strip().split("\n") if line.strip()] if len(parts) > 1 else []
     return script, topics
 
-def make_audio(script, mp3="briefing.mp3"):
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
-    for i in range(3):
-        try:
-            print("Skusam Gemini Audio, pokus:", i + 1)
-            cfg = types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")))
-            )
-            res = client.models.generate_content(
-                model='gemini-3.8-flash',
-                contents="Precitaj tento text prirodzenym hlasom slovenskeho moderatora presne tak ako je napisany:\n\n" + script,
-                config=cfg
-            )
-            for p in res.candidates[0].content.parts:
-                if p.inline_data and p.inline_data.mime_type.startswith("audio/"):
-                    open(mp3, "wb").write(p.inline_data.data)
-                    return
-        except Exception as e:
-            print("Gemini Audio limit/chyba:", e)
-            time.sleep(15)
+def split_text(text, max_len=1800):
+    chunks, current = [], ""
+    for p in text.split("\n"):
+        p = p.strip()
+        if not p:
+            continue
+        if len(current) + len(p) < max_len:
+            current += p + "\n\n"
+        else:
+            if current:
+                chunks.append(current.strip())
+            current = p + "\n\n"
+    if current:
+        chunks.append(current.strip())
+    return chunks
 
-    print("Generujem dlhe audio cez Edge-TTS...")
-    asyncio.run(edge_tts.Communicate(script, "sk-SK-LukasNeural").save(mp3))
+async def edge_chunk_save(chunks, mp3):
+    with open(mp3, "wb") as out:
+        for idx, c in enumerate(chunks):
+            print("Edge-TTS spracovava cast:", idx + 1, "z", len(chunks))
+            comm = edge_tts.Communicate(c, "sk-SK-LukasNeural")
+            async for msg in comm.stream():
+                if msg["type"] == "audio":
+                    out.write(msg["data"])
+
+def make_audio(script, mp3="briefing.mp3"):
+    clean_script = script.replace("*", "").replace("#", "")
+    chunks = split_text(clean_script, 1800)
+    print("Text rozdeleny na", len(chunks), "casti pre plynule generovanie audia.")
+
+    # Pokus 1: Edge-TTS po menších častiach (zvládne akúkoľvek dĺžku)
+    try:
+        print("Generujem dlhe audio cez Edge-TTS po castiach...")
+        asyncio.run(edge_chunk_save(chunks, mp3))
+        if os.path.exists(mp3) and os.path.getsize(mp3) > 1000:
+            print("Edge-TTS uspesne vygenerovalo dlhe audio!")
+            return
+    except Exception as e:
+        print("Edge-TTS zlyhalo:", e)
+
+    # Pokus 2: Nepriestrelná záloha cez gTTS, ak mal Edge-TTS výpadok na GitHub IP
+    print("Prepinam na zalozne gTTS pre dlhy text...")
+    gTTS(text=clean_script, lang='sk').save(mp3)
+    print("Audio uspesne vygenerovane cez gTTS!")
 
 def send_mail(mp3, script, topics):
     user = os.environ["EMAIL_ADDRESS"].strip()
