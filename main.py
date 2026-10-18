@@ -1,4 +1,6 @@
 import os
+import time
+import asyncio
 import smtplib
 from datetime import datetime
 from email.message import EmailMessage
@@ -6,6 +8,7 @@ import urllib.request
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
+import edge_tts
 
 # 1. Stiahnutie TOP sprav priamo z homepage Techmeme.com
 def fetch_techmeme_homepage():
@@ -31,61 +34,78 @@ def fetch_techmeme_homepage():
         stories.append(f"HLAVNÁ TÉMA #{idx}: {headline}\nSÚVISIACE SPRÁVY: {full_cluster_text}\n")
     return "\n---\n".join(stories)
 
-# 2. Vygenerovanie audia priamo cez Gemini API
-def generate_gemini_audio(raw_news, output_file="techmeme_brifing.mp3"):
+# 2. Vygenerovanie audia (s opakovaním pri preťažení 503 a záložným hlasom)
+def generate_briefing_audio(raw_news, output_file="techmeme_brifing.mp3"):
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
     today_str = datetime.now().strftime("%d. %m. %Y")
     
     prompt = f"""
     Si profesionálny slovenský technologický moderátor. Dnes je {today_str}.
     Priprav plynulý, pútavý audio brífing v slovenčine na základe týchto správ z Techmeme.com. 
-    Ignoruj investície, akvizície a dátové centrá. Píš čistý súvislý text vhodný na priame prečítanie nahlas, bez odrážok a markdownu.
+    Ignoruj investície, akvizície, kryptomeny a dátové centrá. Píš čistý súvislý text vhodný na priame prečítanie nahlas, bez odrážok, nadpisov a markdownu.
     
     SPRÁVY:
     {raw_news}
     """
     
-    print("Generujem natívne audio priamo cez Gemini...")
-    response = client.models.generate_content(
-        model='gemini-3.8-flash',
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Puck"  # Na výber sú napr. Puck, Charon, Kore, Fenrir, Aoede
+    # POKUS A: Priame natívne audio cez Gemini (4 pokusy s čakaním)
+    for attempt in range(1, 5):
+        try:
+            print(f"Pokus {attempt}/4: Generujem natívne audio priamo cez Gemini...")
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                voice_name="Puck"
+                            )
+                        )
                     )
                 )
             )
-        )
-    )
-    
-    audio_bytes = None
-    for part in response.candidates[0].content.parts:
-        if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
-            audio_bytes = part.inline_data.data
-            break
             
-    if audio_bytes:
-        with open(output_file, "wb") as f:
-            f.write(audio_bytes)
-        print("Gemini úspešne vygenerovalo audio súbor!")
-        return "Priamy audio brífing vygenerovaný pomocou Gemini AI."
-    else:
-        raise RuntimeError("Gemini nevrátilo audio dáta.")
+            for part in response.candidates[0].content.parts:
+                if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
+                    with open(output_file, "wb") as f:
+                        f.write(part.inline_data.data)
+                    print("Gemini úspešne vygenerovalo natívny audio súbor!")
+                    return "Audio vygenerované priamo cez natívny hlas Gemini AI."
+                    
+        except Exception as e:
+            print(f"Pokus {attempt} zlyhal pre vyťaženosť servera: {e}")
+            if attempt < 4:
+                wait_time = attempt * 20
+                print(f"Čakám {wait_time} sekúnd pred ďalším pokusom...")
+                time.sleep(wait_time)
+
+    # POKUS B (Záložný plán): Ak má Gemini Audio výpadok, vygenerujeme text a prečítame ho cez Edge-TTS
+    print("Gemini Audio je momentálne preťažené. Prepínam na záložný neurálny hlas (Edge-TTS)...")
+    text_response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt
+    )
+    script_text = text_response.text
+    
+    # Použijeme bezplatný neurálny hlas Microsoft Edge (sk-SK-ViktoriaNeural alebo sk-SK-LukasNeural)
+    communicate = edge_tts.Communicate(script_text, "sk-SK-LukasNeural")
+    asyncio.run(communicate.save(output_file))
+    print("Záložné audio cez Edge-TTS úspešne vygenerované!")
+    return f"Audio vygenerované cez záložný neurálny hlas (Gemini Audio malo výpadok).\n\nText brífingu:\n{script_text}"
 
 # 3. Odoslanie hotoveho MP3 suboru na e-mail
-def send_email(mp3_file, script_text):
+def send_email(mp3_file, info_text):
     sender = os.environ["EMAIL_ADDRESS"].strip()
     password = os.environ["EMAIL_APP_PASSWORD"].replace(" ", "").strip()
     today_str = datetime.now().strftime("%d.%m.%Y")
     
     msg = EmailMessage()
-    msg["Subject"] = f"🎧 Ranný Techmeme Audio Brífing (Gemini Audio) ({today_str})"
+    msg["Subject"] = f"🎧 Ranný Techmeme Audio Brífing ({today_str})"
     msg["From"] = sender
     msg["To"] = sender
-    msg.set_content(f"Ahoj,\n\nv prílohe nájdeš dnešný audio prehľad vygenerovaný priamo cez natívne Gemini audio.\n\n{script_text}")
+    msg.set_content(f"Ahoj,\n\nv prílohe nájdeš dnešný ranný prehľad.\n\n{info_text}")
     
     with open(mp3_file, "rb") as f:
         msg.add_attachment(f.read(), maintype="audio", subtype="mp3", filename=f"techmeme_{today_str}.mp3")
@@ -98,7 +118,7 @@ if __name__ == "__main__":
     print("Sťahujem správy z Techmeme...")
     news = fetch_techmeme_homepage()
     mp3_filename = "techmeme_brifing.mp3"
-    info_text = generate_gemini_audio(news, mp3_filename)
+    sprievodny_text = generate_briefing_audio(news, mp3_filename)
     print("Odosielam MP3 na e-mail...")
-    send_email(mp3_filename, info_text)
+    send_email(mp3_filename, sprievodny_text)
     print("Hotovo!")
