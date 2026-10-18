@@ -30,7 +30,6 @@ def fetch_techmeme_from_gmail():
     user = os.environ["EMAIL_ADDRESS"].strip()
     pwd = os.environ["EMAIL_APP_PASSWORD"].replace(" ", "").strip()
     try:
-        print("Hladam Techmeme newsletter v Gmaile...")
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(user, pwd)
         status, _ = mail.select('"[Gmail]/All Mail"')
@@ -42,13 +41,11 @@ def fetch_techmeme_from_gmail():
         if not ids:
             _, data = mail.search(None, '(SUBJECT "Techmeme")')
             ids = data[0].split()
-            
         if not ids:
             return None
             
         _, msg_data = mail.fetch(ids[-1], "(RFC822)")
         msg = email.message_from_bytes(msg_data[0][1])
-        print("Najdeny email:", msg.get("Subject"))
         
         body = ""
         if msg.is_multipart():
@@ -67,7 +64,7 @@ def fetch_techmeme_from_gmail():
         mail.logout()
         return body[:45000] if len(body) > 300 else None
     except Exception as e:
-        print("Chyba pri citani Gmailu:", e)
+        print("Chyba Gmailu:", e)
         return None
 
 def fetch_web_fallback():
@@ -93,7 +90,7 @@ def generate_script_and_topics(news, likes, dislikes):
         "- Ziadne dlhe uvody ani omacky. Chod okamzite k faktom.\n"
         "- Vyber 15 az 20 roznych zaujimavych sprav.\n"
         "- Kazdu spravu zhrn uderne v 2 az 3 vetach (co sa stalo a preco na tom zalezi) a prejdi na dalsiu.\n"
-        "- Pis cisty text na citanie nahlas (bez odrazok a hviezdiciek). Kazdu spravu oddel novym odsekom.\n\n"
+        "- Pis cisty text na citanie nahlas (bez odrazok, hviezdiciek a specialnych znakov). Kazdu spravu oddel novym odsekom.\n\n"
         "Na koniec pridaj oddelovac ===TEMY=== a za nim vypis prebrate temy, kazdu na novy riadok (max 6 slov, bez cislovania).\n\n"
         "SPRAVY:\n" + news
     )
@@ -103,43 +100,61 @@ def generate_script_and_topics(news, likes, dislikes):
     topics = [line.strip("- *1234567890.") for line in parts[1].strip().split("\n") if line.strip()] if len(parts) > 1 else []
     return script, topics
 
-def split_text(text, max_len=1400):
+def split_text(text, max_len=800):
     chunks, current = [], ""
     for p in text.split("\n"):
         p = p.strip()
         if not p:
             continue
         if len(current) + len(p) < max_len:
-            current += p + "\n\n"
+            current += p + " "
         else:
             if current:
                 chunks.append(current.strip())
-            current = p + "\n\n"
+            current = p + " "
     if current:
         chunks.append(current.strip())
     return chunks
 
+async def generate_edge_neural(chunks, mp3):
+    with open(mp3, "wb") as out:
+        for c in chunks:
+            for attempt in range(3):
+                try:
+                    comm = edge_tts.Communicate(c, "sk-SK-LukasNeural", rate="+10%")
+                    got_audio = False
+                    async for msg in comm.stream():
+                        if msg["type"] == "audio":
+                            out.write(msg["data"])
+                            got_audio = True
+                    if got_audio:
+                        break
+                except Exception as e:
+                    print("Edge mini-chyba:", e)
+                    await asyncio.sleep(3)
+            await asyncio.sleep(0.5)
+
 def make_audio(script, mp3="briefing.mp3"):
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
-    clean_script = script.replace("*", "").replace("#", "")
-    chunks = split_text(clean_script, 1400)
-    print("Generujem nativny hlas Gemini po castiach. Pocet casti:", len(chunks))
-
+    clean_script = script.replace("*", "").replace("#", "").replace('"', "")
+    
+    # STUPEN 1: Nativny hlas cez gemini-3.8-flash po mensich 800-znakovych blokoch s opakovaním pri 503
+    gemini_chunks = split_text(clean_script, 800)
     pcm_data = bytearray()
-    gemini_success = True
-
-    for idx, chunk in enumerate(chunks):
+    gemini_ok = True
+    print("Skusam Gemini Audio (gemini-3.8-flash), pocet casti:", len(gemini_chunks))
+    
+    for idx, chunk in enumerate(gemini_chunks):
         part_ok = False
         for attempt in range(3):
             try:
-                print("Gemini Audio cast", idx + 1, "pokus", attempt + 1)
                 cfg = types.GenerateContentConfig(
                     response_modalities=["AUDIO"],
                     speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")))
                 )
                 res = client.models.generate_content(
                     model='gemini-3.8-flash',
-                    contents="Precitaj tento spravodajsky prehlad sviznym, prirodzenym slovenskym hlasom presne tak ako je napisany:\n\n" + chunk,
+                    contents="Precitaj plynule a svizne po slovensky:\n" + chunk,
                     config=cfg
                 )
                 for p in res.candidates[0].content.parts:
@@ -151,28 +166,37 @@ def make_audio(script, mp3="briefing.mp3"):
                     time.sleep(4)
                     break
             except Exception as e:
-                print("Chyba pri casti:", e)
-                time.sleep(12)
+                print("Gemini Audio cast", idx + 1, "pokus", attempt + 1, "zlyhal:", e)
+                time.sleep(15)
         if not part_ok:
-            gemini_success = False
+            gemini_ok = False
             break
 
-    if gemini_success and len(pcm_data) > 1000:
-        print("Spajam Gemini Audio do MP3 cez ffmpeg...")
+    if gemini_ok and len(pcm_data) > 1000:
         open("raw.pcm", "wb").write(pcm_data)
         subprocess.run(["ffmpeg", "-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "raw.pcm", "-b:a", "128k", mp3], check=True)
-        return "Nativny hlas Gemini AI (Puck)"
+        return "Nativny Gemini AI (gemini-3.8-flash)"
 
-    print("Nativny hlas zlyhal, pouzivam zalozny hlas...")
+    # STUPEN 2: Spolahlivy neuralny hlas Edge-TTS (Lukas) po malych kuskoch
+    print("Prepinam na neuralny hlas Edge-TTS (Lukas)...")
+    try:
+        small_chunks = split_text(clean_script, 400)
+        asyncio.run(generate_edge_neural(small_chunks, mp3))
+        if os.path.exists(mp3) and os.path.getsize(mp3) > 5000:
+            return "Neuralny hlas Microsoft (Lukas +10%)"
+    except Exception as e:
+        print("Edge-TTS zlyhalo:", e)
+
+    # STUPEN 3: Posledna zachrana
     gTTS(text=clean_script, lang='sk').save(mp3)
-    return "Zalozny hlas (gTTS)"
+    return "Roboticky zalozny hlas (gTTS)"
 
 def send_mail(mp3, script, topics, source_info, voice_info):
     user = os.environ["EMAIL_ADDRESS"].strip()
     pwd = os.environ["EMAIL_APP_PASSWORD"].replace(" ", "").strip()
     repo = os.environ.get("REPO", "antonkozon-cell/techmeme-audio")
     
-    links_html = "<p><i>Zdroj: " + source_info + " | Hlas: " + voice_info + "</i></p>"
+    links_html = "<p><i>Zdroj: " + source_info + " | Pouzity hlas: <b>" + voice_info + "</b></i></p>"
     links_html += "<h3>Hlasovanie o temach (Klikni pre ulozenie preferencie):</h3><ul>"
     for t in topics:
         like_url = "https://github.com/" + repo + "/issues/new?title=" + urllib.parse.quote("LIKE: " + t)
