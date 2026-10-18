@@ -94,11 +94,24 @@ def generate_script_and_topics(news, likes, dislikes):
         "Na koniec pridaj oddelovac ===TEMY=== a za nim vypis prebrate temy, kazdu na novy riadok (max 6 slov, bez cislovania).\n\n"
         "SPRAVY:\n" + news
     )
-    res = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
-    parts = res.text.split("===TEMY===")
-    script = parts[0].strip()
-    topics = [line.strip("- *1234567890.") for line in parts[1].strip().split("\n") if line.strip()] if len(parts) > 1 else []
-    return script, topics
+
+    # Opakovanie pri chybe 503 pre Gemini text
+    for attempt in range(1, 4):
+        try:
+            print(f"Generujem textovy scenar cez Gemini (pokus {attempt}/3)...")
+            res = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
+            parts = res.text.split("===TEMY===")
+            script = parts[0].strip()
+            topics = [line.strip("- *1234567890.") for line in parts[1].strip().split("\n") if line.strip()] if len(parts) > 1 else []
+            return script, topics
+        except Exception as e:
+            print(f"Pokus zlyhal kvoli pretazeniu Gemini (503): {e}")
+            if attempt < 3:
+                time.sleep(15)
+            else:
+                print("Gemini text zlyhal úplne, vytváram záložný scenár...")
+                fallback_script = "Pozor, Gemini API malo výpadok. Tu je surový obsah newslettera:\n\n" + news[:3000]
+                return fallback_script, ["Záložná téma 1", "Záložná téma 2"]
 
 def split_text(text, max_len=800):
     chunks, current = [], ""
@@ -138,7 +151,6 @@ def make_audio(script, mp3="briefing.mp3"):
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
     clean_script = script.replace("*", "").replace("#", "").replace('"', "")
     
-    # STUPEN 1: Nativny hlas cez gemini-3.8-flash po mensich 800-znakovych blokoch s opakovaním pri 503
     gemini_chunks = split_text(clean_script, 800)
     pcm_data = bytearray()
     gemini_ok = True
@@ -177,7 +189,6 @@ def make_audio(script, mp3="briefing.mp3"):
         subprocess.run(["ffmpeg", "-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "raw.pcm", "-b:a", "128k", mp3], check=True)
         return "Nativny Gemini AI (gemini-3.8-flash)"
 
-    # STUPEN 2: Spolahlivy neuralny hlas Edge-TTS (Lukas) po malych kuskoch
     print("Prepinam na neuralny hlas Edge-TTS (Lukas)...")
     try:
         small_chunks = split_text(clean_script, 400)
@@ -187,7 +198,6 @@ def make_audio(script, mp3="briefing.mp3"):
     except Exception as e:
         print("Edge-TTS zlyhalo:", e)
 
-    # STUPEN 3: Posledna zachrana
     gTTS(text=clean_script, lang='sk').save(mp3)
     return "Roboticky zalozny hlas (gTTS)"
 
