@@ -22,7 +22,7 @@ jobs:
         python-version: '3.11'
 
     - name: Krok 3 - Instalacia kniznic
-      run: pip install --upgrade google-genai beautifulsoup4 edge-tts
+      run: pip install --upgrade google-genai beautifulsoup4 edge-tts gTTS
 
     - name: Krok 4 - Spustenie generovania audia
       env:
