@@ -1,63 +1,117 @@
-import os, time, asyncio, smtplib, urllib.request
-from datetime import datetime
+import os, time, json, asyncio, smtplib, urllib.request, urllib.parse
 from email.message import EmailMessage
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
 import edge_tts
 
-def fetch_news():
+def get_prefs():
+    repo = os.environ.get("REPO", "antonkozon-cell/techmeme-audio")
+    token = os.environ.get("GITHUB_TOKEN", "")
+    url = "https://api.github.com/repos/" + repo + "/issues?state=all&per_page=50"
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    if token:
+        req.add_header('Authorization', 'Bearer ' + token)
+    likes, dislikes = [], []
+    try:
+        data = json.loads(urllib.request.urlopen(req).read().decode('utf-8'))
+        for i in data:
+            t = i.get("title", "")
+            if t.startswith("LIKE:"):
+                likes.append(t.replace("LIKE:", "").strip())
+            elif t.startswith("DISLIKE:"):
+                dislikes.append(t.replace("DISLIKE:", "").strip())
+    except Exception as e:
+        print("Citanle preferencii preskocene:", e)
+    return likes, dislikes
+
+def fetch_all_news():
     req = urllib.request.Request("https://www.techmeme.com/", headers={'User-Agent': 'Mozilla/5.0'})
     html = urllib.request.urlopen(req).read().decode('utf-8', errors='ignore')
     soup = BeautifulSoup(html, 'html.parser')
-    top = soup.find('div', id='topcol1') or soup
     stories = []
-    for c in top.find_all('div', class_='clus')[:20]:
+    for c in soup.find_all('div', class_='clus'):
         link = c.find('a', class_='ourh')
         if link:
-            stories.append(link.get_text(" ", strip=True) + " - " + c.get_text(" ", strip=True))
-    return "\n\n".join(stories)
+            stories.append(link.get_text(" ", strip=True) + " | " + c.get_text(" ", strip=True))
+    return "\n\n".join(stories[:65])
 
-def make_audio(news, mp3="briefing.mp3"):
+def generate_script_and_topics(news, likes, dislikes):
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
-    prompt = "Si slovensky moderator. Sprav plynuly audio brifing v slovencine z tychto sprav (vynechaj investicie, akvizicie, krypto a datacentra). Pis cisty text bez odrazok:\n" + news
-    
-    for i in range(4):
+    pref_text = ""
+    if likes:
+        pref_text += "Pouzivatela v minulosti zaujali tieto temy (uprednostni podobny typ sprav): " + ", ".join(likes) + ".\n"
+    if dislikes:
+        pref_text += "Tieto temy pouzivatela nudili (vynechaj ich alebo im venuj minimum casu): " + ", ".join(dislikes) + ".\n"
+
+    prompt = (
+        "Si slovensky technologicky moderator. Sprav dlhy, podrobny a putavy rozhlasovy prehlad v slovencine (aspon 1200 slov) zo vsetkych zaujimavych sprav nizsie. "
+        "Striktne vynechaj mergers, akvizicie, kryptomeny, datove centra a funding deals. "
+        + pref_text +
+        "Rozdel prehlad na logicke celky, vysvetli kontext a rozober spravy do hlbky. Pis cisty suvisly text vhodny na priame citanie nahlas, bez odrazok a bez hviezdiciek.\n"
+        "Na uplny koniec tvojej odpovede pridaj presny oddelovac ===TEMY=== a za nim vypis 8 az 12 hlavnych tem z dnesneho prehladu, kazdu na novy riadok ako kratky nazov (max 6 slov, bez cislovania a odrazok).\n\n"
+        "SPRAVY:\n" + news
+    )
+    res = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
+    parts = res.text.split("===TEMY===")
+    script = parts[0].strip()
+    topics = [line.strip("- *1234567890.") for line in parts[1].strip().split("\n") if line.strip()] if len(parts) > 1 else []
+    return script, topics
+
+def make_audio(script, mp3="briefing.mp3"):
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
+    for i in range(3):
         try:
             print("Skusam Gemini Audio, pokus:", i + 1)
             cfg = types.GenerateContentConfig(
                 response_modalities=["AUDIO"],
                 speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")))
             )
-            res = client.models.generate_content(model='gemini-3.8-flash', contents=prompt, config=cfg)
+            res = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents="Precitaj tento text prirodzenym hlasom slovenskeho moderatora presne tak ako je napisany:\n\n" + script,
+                config=cfg
+            )
             for p in res.candidates[0].content.parts:
                 if p.inline_data and p.inline_data.mime_type.startswith("audio/"):
                     open(mp3, "wb").write(p.inline_data.data)
-                    return "Audio z Gemini AI."
+                    return
         except Exception as e:
-            print("Chyba pokusu:", e)
-            time.sleep(20)
+            print("Gemini Audio limit/chyba:", e)
+            time.sleep(15)
 
-    print("Prepinam na zalozny hlas Edge-TTS...")
-    res = client.models.generate_content(model='gemini-3.8-flash', contents=prompt)
-    asyncio.run(edge_tts.Communicate(res.text, "sk-SK-LukasNeural").save(mp3))
-    return res.text
+    print("Generujem dlhe audio cez Edge-TTS...")
+    asyncio.run(edge_tts.Communicate(script, "sk-SK-LukasNeural").save(mp3))
 
-def send_mail(mp3, text):
+def send_mail(mp3, script, topics):
     user = os.environ["EMAIL_ADDRESS"].strip()
     pwd = os.environ["EMAIL_APP_PASSWORD"].replace(" ", "").strip()
+    repo = os.environ.get("REPO", "antonkozon-cell/techmeme-audio")
+    
+    links_html = "<h3>Ako sa ti pacili dnesne temy? (Klikni pre ulozenie preferencie)</h3><ul>"
+    for t in topics:
+        like_url = "https://github.com/" + repo + "/issues/new?title=" + urllib.parse.quote("LIKE: " + t) + "&body=" + urllib.parse.quote("Tato tema ma zaujala, zaraduj viac podobnych sprav.")
+        dislike_url = "https://github.com/" + repo + "/issues/new?title=" + urllib.parse.quote("DISLIKE: " + t) + "&body=" + urllib.parse.quote("Tato tema ma nezaujala, v buducnosti ju obmedz.")
+        links_html += "<li><b>" + t + "</b> &mdash; <a href='" + like_url + "'>[👍 Zaujimave]</a> &nbsp; <a href='" + dislike_url + "'>[👎 Menej takehoto]</a></li><br>"
+    links_html += "</ul><hr><p style='white-space: pre-wrap;'>" + script + "</p>"
+
     msg = EmailMessage()
-    msg["Subject"] = "Techmeme Audio Brifing"
+    msg["Subject"] = "🎧 Dlhy Techmeme Audio Brifing + Dotaznik"
     msg["From"] = user
     msg["To"] = user
-    msg.set_content("Dnesny prehlad:\n\n" + text)
-    msg.add_attachment(open(mp3, "rb").read(), maintype="audio", subtype="mp3", filename="techmeme.mp3")
+    msg.set_content("Pre zobrazenie hlasovacich odkazov si zapni HTML zobrazenie spravy.\n\n" + script)
+    msg.add_alternative("<html><body>" + links_html + "</body></html>", subtype="html")
+    msg.add_attachment(open(mp3, "rb").read(), maintype="audio", subtype="mp3", filename="techmeme_dlhy.mp3")
+    
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
         s.login(user, pwd)
         s.send_message(msg)
 
 if __name__ == "__main__":
-    n = fetch_news()
-    t = make_audio(n)
-    send_mail("briefing.mp3", t)
+    likes, dislikes = get_prefs()
+    print("Nacitane preferencie - Likes:", len(likes), "Dislikes:", len(dislikes))
+    news = fetch_all_news()
+    script, topics = generate_script_and_topics(news, likes, dislikes)
+    make_audio(script)
+    send_mail("briefing.mp3", script, topics)
     print("Hotovo")
