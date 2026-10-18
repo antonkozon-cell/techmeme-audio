@@ -31,15 +31,47 @@ def fetch_techmeme_homepage():
             continue
         headline = main_link.get_text(" ", strip=True)
         full_cluster_text = clus.get_text(" ", strip=True)
-        stories.append(f"HLAVNÁ TÉMA #{idx}: {headline}\nSÚVISIACE SPRÁVY: {full_cluster_text}\n")
+        stories.append(f"HLAVNA TEMA #{idx}: {headline}\nSUVISIACE SPRAVY: {full_cluster_text}\n")
     return "\n---\n".join(stories)
 
-# 2. Vygenerovanie audia (s opakovaním pri preťažení 503 a záložným hlasom)
+# 2. Vygenerovanie audia (s opakovanim pri pretazeni 503 a zaloznym hlasom)
 def generate_briefing_audio(raw_news, output_file="techmeme_brifing.mp3"):
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
     today_str = datetime.now().strftime("%d. %m. %Y")
     
-    prompt = f"""
-    Si profesionálny slovenský technologický moderátor. Dnes je {today_str}.
-    Priprav plynulý, pútavý audio brífing v slovenčine na základe týchto správ z Techmeme.com. 
-    Ignoruj investície, akvizície, kryptomeny a dátové centrá. Píš čistý súvislý text vhodný na priame prečítanie nahlas, bez odrážok, nadpis
+    prompt = (
+        f"Si profesionalny slovensky technologicky moderator. Dnes je {today_str}. "
+        "Priprav plynuly, putavy audio brifing v slovencine na zaklade tychto sprav z Techmeme.com. "
+        "Ignoruj investicie, akvizicie, kryptomeny a datove centra. "
+        "Pis cisty suvisly text vhodny na priame precitanie nahlas, bez odrazok, nadpisov a markdownu.\n\n"
+        f"SPRAVY:\n{raw_news}"
+    )
+    
+    # POKUS A: Priame nativne audio cez Gemini (4 pokusy s cakanim)
+    for attempt in range(1, 5):
+        try:
+            print(f"Pokus {attempt}/4: Generujem nativne audio priamo cez Gemini...")
+            response = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                voice_name="Puck"
+                            )
+                        )
+                    )
+                )
+            )
+            
+            for part in response.candidates[0].content.parts:
+                if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
+                    with open(output_file, "wb") as f:
+                        f.write(part.inline_data.data)
+                    print("Gemini uspesne vygenerovalo nativny audio subor!")
+                    return "Audio vygenerovane priamo cez nativny hlas Gemini AI."
+                    
+        except Exception as e:
+            print(f"Pokus {
