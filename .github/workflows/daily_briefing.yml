@@ -2,7 +2,7 @@ name: Techmeme Daily Slovak Audio
 
 on:
   schedule:
-    - cron: '30 5 * * *'
+    - cron: '23 5 * * *'
   workflow_dispatch:
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
         python-version: '3.11'
 
     - name: Krok 3 - Instalacia kniznic
-      run: pip install --upgrade google-genai beautifulsoup4
+      run: pip install --upgrade google-genai beautifulsoup4 edge-tts
 
     - name: Krok 4 - Spustenie generovania audia
       env:
