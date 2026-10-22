@@ -2,7 +2,7 @@ name: Techmeme Daily Slovak Audio
 
 on:
   schedule:
-    - cron: '23 5 * * *'
+    - cron: '45 3 * * *'
   workflow_dispatch:
 
 jobs:
